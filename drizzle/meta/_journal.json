@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1788889159942,
+      "tag": "0000_tiresome_night_thrasher",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1788889200941,
+      "tag": "0001_domain_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788889348327,
+      "tag": "0002_striped_kitty_pryde",
+      "breakpoints": true
+    }
+  ]
+}
