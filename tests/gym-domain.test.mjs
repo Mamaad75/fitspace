@@ -4,7 +4,7 @@ import {readFileSync,readdirSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
 import {DatabaseSync} from 'node:sqlite';
 import ts from 'typescript';
 const dir=new URL('../.gym-test/',import.meta.url);mkdirSync(dir,{recursive:true});
-for(const name of ['domain','db','service','attendance','reporting']){
+for(const name of ['domain','db','service','attendance','reporting','classes']){
  let src=readFileSync(new URL(`../lib/gym/${name}.ts`,import.meta.url),'utf8');
  src=src.replace("import { env } from 'cloudflare:workers';","const env=globalThis.__gymEnv;").replace("import {headers} from 'next/headers';","const headers=async()=>globalThis.__gymHeaders;").replaceAll("from './domain'","from './domain.mjs'").replaceAll("from './db'","from './db.mjs'").replaceAll("from './service'","from './service.mjs'");
  writeFileSync(new URL(name+'.mjs',dir),ts.transpileModule(src,{compilerOptions:{module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2022}}).outputText);
@@ -140,4 +140,65 @@ test('Trainer assignment and branch restrictions both apply; reporting covers ev
  const full=await reporting.report(owner,{from:domain.today(),to:domain.today()});const actual=sql.prepare("SELECT SUM(amount) n FROM payments WHERE tenant_id=? AND date=? AND status='CONFIRMED'").get(a,domain.today()).n;assert.equal(full.rangeRevenue,actual);assert.ok(full.rangeRevenue>=610);
  await assert.rejects(()=>reporting.report(owner,{from:'2026-02-31',to:'2026-03-02'}),e=>e.status===400);
  const restricted=await reporting.report(scopedTrainer);assert.equal(restricted.summary.members,0);assert.equal(restricted.rangeRevenue,0);
+});
+let classes,sessionId,classMember;
+test('Class creation enforces room/trainer conflicts and tenant/branch permissions',async()=>{
+ classes=await import(new URL('classes.mjs',dir));await svc.save(owner,'memberships',{member_id:memberA,plan_id:planA,start_date:new Date(Date.parse(domain.today())+86400000).toISOString().slice(0,10)});const starts=new Date(Date.now()+86400000).toISOString();
+ sessionId=(await classes.createClass(owner,{name:'Strength',room:'Studio A',branch_id:branchA,trainer_id:trainer.access.id,starts_at:starts,duration:60,capacity:1})).id;
+ await assert.rejects(()=>classes.createClass(owner,{name:'Conflict',room:'Studio A',branch_id:branchA,starts_at:starts,duration:30,capacity:5}),/class_time_conflict/);
+ await assert.rejects(()=>classes.createClass(owner,{name:'Coach conflict',room:'Studio B',trainer_id:trainer.access.id,branch_id:branchA,starts_at:starts,duration:30,capacity:5}),/class_time_conflict/);
+ await assert.rejects(()=>classes.createClass(memberCtx,{}),e=>e.status===403);
+ await assert.rejects(()=>classes.createClass(owner,{name:'Wrong branch',room:'A',branch_id:branchB,starts_at:starts,duration:60,capacity:1}),e=>e.status===404);
+ const result=await classes.listClasses(owner);assert.equal(result.items.length,1);assert.equal(result.items[0].booked,0);
+ await assert.rejects(()=>classes.listClasses(owner,{from:'not-a-date'}),e=>e.status===400);
+});
+test('Class reservations are idempotent; full classes waitlist and cancellation promotes the next eligible member',async()=>{
+ classMember=(await svc.save(owner,'members',{name:'Class Member',phone:'class-member',branch_id:branchA})).id;await svc.save(owner,'memberships',{member_id:classMember,plan_id:planA,start_date:domain.today()});
+ const first=await classes.bookClass(memberCtx,sessionId,{member_id:classMember});assert.equal(first.status,'BOOKED');assert.equal(sql.prepare('SELECT member_id FROM class_bookings WHERE id=?').get(first.id).member_id,memberA);
+ const notificationCount=count('notifications');assert.equal((await classes.bookClass(memberCtx,sessionId,{})).id,first.id);assert.equal(count('notifications'),notificationCount);
+ const waiting=await classes.bookClass(owner,sessionId,{member_id:classMember});assert.equal(waiting.status,'WAITLIST');
+ const list=await classes.listClasses(memberCtx);assert.equal(list.items[0].my_status,'BOOKED');assert.equal(list.items[0].waiting,1);assert.equal(list.items[0].booked,1);assert.equal(list.items[0].member_id,undefined);
+ await assert.rejects(()=>classes.cancelBooking(memberCtx,waiting.id),e=>e.status===403);
+ await classes.cancelBooking(memberCtx,first.id);assert.equal(sql.prepare('SELECT status FROM class_bookings WHERE id=?').get(waiting.id).status,'BOOKED');
+ assert.equal(sql.prepare("SELECT COUNT(*) n FROM class_bookings WHERE session_id=? AND status='BOOKED'").get(sessionId).n,1);
+ const rebook=await classes.bookClass(memberCtx,sessionId,{});assert.equal(rebook.status,'WAITLIST');
+ await assert.rejects(()=>classes.classRoster(memberCtx,sessionId),e=>e.status===403);
+ assert.equal((await classes.classRoster(trainer,sessionId)).items.length,2);
+ await assert.rejects(()=>classes.classRoster({...trainer,access:{...trainer.access,id:'another-trainer'}},sessionId),e=>e.status===404);
+});
+test('Expired or inactive members and overlapping bookings are rejected; database guards prevent overbooking',async()=>{
+ const expired=(await svc.save(owner,'members',{name:'Expired',phone:'expired-class',branch_id:branchA})).id;await assert.rejects(()=>classes.bookClass(owner,sessionId,{member_id:expired}),/class_not_eligible/);
+ await assert.rejects(()=>classes.bookClass(owner,sessionId,{member_id:memberB}),e=>e.status===404);
+ const s=sql.prepare('SELECT * FROM class_sessions WHERE id=?').get(sessionId);const overlap=(await classes.createClass(owner,{name:'Overlap member',room:'Different room',branch_id:branchA,starts_at:s.starts_at,duration:30,capacity:5})).id;
+ await assert.rejects(()=>classes.bookClass(memberCtx,overlap,{}),/class_booking_conflict/);
+ assert.throws(()=>sql.prepare("UPDATE class_bookings SET status='BOOKED' WHERE session_id=? AND member_id=?").run(sessionId,memberA),/class_capacity_full/);
+ const inactive=(await svc.save(owner,'members',{name:'Inactive',phone:'inactive-class',branch_id:branchA})).id;await svc.save(owner,'memberships',{member_id:inactive,plan_id:planA,start_date:domain.today()});sql.prepare("UPDATE members SET status='INACTIVE' WHERE id=?").run(inactive);await assert.rejects(()=>classes.bookClass(owner,sessionId,{member_id:inactive}),/class_not_eligible/);
+});
+test('Class cancellation closes all reservations without promoting; repeated cancellation is safe',async()=>{
+ await classes.cancelClass(owner,sessionId);assert.equal(sql.prepare("SELECT COUNT(*) n FROM class_bookings WHERE session_id=? AND status<>'CANCELLED'").get(sessionId).n,0);
+ const notifications=count('notifications');await classes.cancelClass(owner,sessionId);assert.equal(count('notifications'),notifications);
+ await assert.rejects(()=>classes.bookClass(memberCtx,sessionId,{}),e=>e.status===409);
+});
+test('Class attendance is restricted to staff or assigned trainer and respects start/end times',async()=>{
+ const id=(await classes.createClass(owner,{name:'Attendance',room:'Studio C',branch_id:branchA,trainer_id:trainer.access.id,starts_at:new Date(Date.now()+2*86400000).toISOString(),duration:60,capacity:3})).id;
+ const booking=await classes.bookClass(memberCtx,id,{});await assert.rejects(()=>classes.markClassAttendance(trainer,booking.id,{status:'ATTENDED'}),e=>e.status===409);
+ sql.prepare('UPDATE class_sessions SET starts_at=?,ends_at=? WHERE id=?').run(new Date(Date.now()-60000).toISOString(),new Date(Date.now()+60000).toISOString(),id);
+ await assert.rejects(()=>classes.markClassAttendance(memberCtx,booking.id,{status:'ATTENDED'}),e=>e.status===403);
+ await classes.markClassAttendance(trainer,booking.id,{status:'ATTENDED'});assert.equal(sql.prepare('SELECT status FROM class_bookings WHERE id=?').get(booking.id).status,'ATTENDED');
+ await assert.rejects(()=>classes.markClassAttendance(trainer,booking.id,{status:'NO_SHOW'}),e=>e.status===409);
+ sql.prepare('UPDATE class_sessions SET ends_at=? WHERE id=?').run(new Date(Date.now()-1000).toISOString(),id);await classes.markClassAttendance(trainer,booking.id,{status:'NO_SHOW'});
+ await assert.rejects(()=>classes.cancelBooking(memberCtx,booking.id),e=>e.status===409);
+});
+test('Calendar export keeps access boundaries and safely escapes Unicode event text',async()=>{
+ const notes='تمرین طولانی '.repeat(20)+'\nATTENDEE:someone@example.com';const id=(await classes.createClass(owner,{name:'یوگا، گروهی',room:'Studio Calendar',branch_id:branchA,starts_at:new Date(Date.now()+3*86400000).toISOString(),duration:45,capacity:5,notes})).id;
+ const calendar=await classes.classCalendar(memberCtx,id);assert.match(calendar.content,/BEGIN:VCALENDAR/);assert.match(calendar.content,/DTSTART:\d{8}T\d{6}Z/);assert.equal(calendar.content.split('\r\n').filter(l=>l.startsWith('ATTENDEE:')).length,0);for(const line of calendar.content.split('\r\n'))assert.ok(Buffer.byteLength(line)<=75);
+ await assert.rejects(()=>classes.classCalendar({...owner,tenant:{...owner.tenant,id:b}},id),e=>e.status===404);
+});
+
+test('Waitlist promotion revalidates eligibility and skips an inactive first candidate',async()=>{
+ const next=(await svc.save(owner,'members',{name:'Next eligible',phone:'next-eligible',branch_id:branchA})).id;await svc.save(owner,'memberships',{member_id:next,plan_id:planA,start_date:domain.today()});
+ const id=(await classes.createClass(owner,{name:'Revalidate',room:'Revalidate room',branch_id:branchA,starts_at:new Date(Date.now()+4*86400000).toISOString(),duration:60,capacity:1})).id;
+ const first=await classes.bookClass(memberCtx,id,{});const skip=await classes.bookClass(owner,id,{member_id:classMember});const promote=await classes.bookClass(owner,id,{member_id:next});
+ sql.prepare("UPDATE members SET status='INACTIVE' WHERE id=?").run(classMember);await classes.cancelBooking(memberCtx,first.id);
+ assert.equal(sql.prepare('SELECT status FROM class_bookings WHERE id=?').get(skip.id).status,'WAITLIST');assert.equal(sql.prepare('SELECT status FROM class_bookings WHERE id=?').get(promote.id).status,'BOOKED');
 });

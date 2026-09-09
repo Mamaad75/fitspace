@@ -1,0 +1,31 @@
+CREATE TRIGGER class_conflict_insert BEFORE INSERT ON class_sessions WHEN NEW.status='SCHEDULED' BEGIN SELECT CASE WHEN EXISTS(SELECT 1 FROM class_sessions s WHERE s.tenant_id=NEW.tenant_id AND s.id<>NEW.id AND s.status='SCHEDULED' AND s.starts_at<NEW.ends_at AND s.ends_at>NEW.starts_at AND ((s.branch_id=NEW.branch_id AND s.room=NEW.room) OR (NEW.trainer_id IS NOT NULL AND s.trainer_id=NEW.trainer_id))) THEN RAISE(ABORT,'class_time_conflict') END; END;
+--> statement-breakpoint
+CREATE TRIGGER class_booking_guard_insert BEFORE INSERT ON class_bookings WHEN NEW.status IN ('BOOKED','WAITLIST') BEGIN SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM class_sessions s JOIN members m ON m.tenant_id=s.tenant_id AND m.id=NEW.member_id AND m.branch_id=s.branch_id AND m.status='ACTIVE' WHERE s.tenant_id=NEW.tenant_id AND s.id=NEW.session_id AND s.status='SCHEDULED' AND s.starts_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') AND EXISTS(SELECT 1 FROM memberships ms WHERE ms.tenant_id=m.tenant_id AND ms.member_id=m.id AND ms.status='ACTIVE' AND ms.start_date<=date(s.starts_at,'+3 hours','+30 minutes') AND ms.end_date>=date(s.starts_at,'+3 hours','+30 minutes'))) THEN RAISE(ABORT,'class_not_eligible') END;
+ SELECT CASE WHEN NEW.status='BOOKED' AND (SELECT COUNT(*) FROM class_bookings b WHERE b.tenant_id=NEW.tenant_id AND b.session_id=NEW.session_id AND b.id<>NEW.id AND b.status IN ('BOOKED','ATTENDED','NO_SHOW')) >= (SELECT capacity FROM class_sessions WHERE tenant_id=NEW.tenant_id AND id=NEW.session_id) THEN RAISE(ABORT,'class_capacity_full') END;
+ SELECT CASE WHEN EXISTS(SELECT 1 FROM class_bookings b JOIN class_sessions s ON s.tenant_id=b.tenant_id AND s.id=b.session_id JOIN class_sessions target ON target.tenant_id=NEW.tenant_id AND target.id=NEW.session_id WHERE b.tenant_id=NEW.tenant_id AND b.member_id=NEW.member_id AND b.id<>NEW.id AND b.status IN ('BOOKED','WAITLIST','ATTENDED') AND s.status='SCHEDULED' AND s.starts_at<target.ends_at AND s.ends_at>target.starts_at) THEN RAISE(ABORT,'class_booking_conflict') END; END;
+--> statement-breakpoint
+CREATE TRIGGER class_conflict_update BEFORE UPDATE ON class_sessions WHEN NEW.status='SCHEDULED' BEGIN SELECT CASE WHEN EXISTS(SELECT 1 FROM class_sessions s WHERE s.tenant_id=NEW.tenant_id AND s.id<>NEW.id AND s.status='SCHEDULED' AND s.starts_at<NEW.ends_at AND s.ends_at>NEW.starts_at AND ((s.branch_id=NEW.branch_id AND s.room=NEW.room) OR (NEW.trainer_id IS NOT NULL AND s.trainer_id=NEW.trainer_id))) THEN RAISE(ABORT,'class_time_conflict') END; END;
+--> statement-breakpoint
+CREATE TRIGGER class_booking_guard_update BEFORE UPDATE ON class_bookings WHEN NEW.status IN ('BOOKED','WAITLIST') BEGIN SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM class_sessions s JOIN members m ON m.tenant_id=s.tenant_id AND m.id=NEW.member_id AND m.branch_id=s.branch_id AND m.status='ACTIVE' WHERE s.tenant_id=NEW.tenant_id AND s.id=NEW.session_id AND s.status='SCHEDULED' AND s.starts_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') AND EXISTS(SELECT 1 FROM memberships ms WHERE ms.tenant_id=m.tenant_id AND ms.member_id=m.id AND ms.status='ACTIVE' AND ms.start_date<=date(s.starts_at,'+3 hours','+30 minutes') AND ms.end_date>=date(s.starts_at,'+3 hours','+30 minutes'))) THEN RAISE(ABORT,'class_not_eligible') END;
+ SELECT CASE WHEN NEW.status='BOOKED' AND (SELECT COUNT(*) FROM class_bookings b WHERE b.tenant_id=NEW.tenant_id AND b.session_id=NEW.session_id AND b.id<>NEW.id AND b.status IN ('BOOKED','ATTENDED','NO_SHOW')) >= (SELECT capacity FROM class_sessions WHERE tenant_id=NEW.tenant_id AND id=NEW.session_id) THEN RAISE(ABORT,'class_capacity_full') END;
+ SELECT CASE WHEN EXISTS(SELECT 1 FROM class_bookings b JOIN class_sessions s ON s.tenant_id=b.tenant_id AND s.id=b.session_id JOIN class_sessions target ON target.tenant_id=NEW.tenant_id AND target.id=NEW.session_id WHERE b.tenant_id=NEW.tenant_id AND b.member_id=NEW.member_id AND b.id<>NEW.id AND b.status IN ('BOOKED','WAITLIST','ATTENDED') AND s.status='SCHEDULED' AND s.starts_at<target.ends_at AND s.ends_at>target.starts_at) THEN RAISE(ABORT,'class_booking_conflict') END; END;
+--> statement-breakpoint
+CREATE TRIGGER class_booking_notice_insert AFTER INSERT ON class_bookings BEGIN INSERT INTO notifications(id,tenant_id,member_id,title,body) SELECT lower(hex(randomblob(16))),NEW.tenant_id,NEW.member_id,CASE NEW.status WHEN 'BOOKED' THEN 'رزرو کلاس تأیید شد' WHEN 'WAITLIST' THEN 'در فهرست انتظار کلاس هستید' ELSE 'رزرو کلاس لغو شد' END,s.name FROM class_sessions s WHERE s.tenant_id=NEW.tenant_id AND s.id=NEW.session_id; END;
+--> statement-breakpoint
+CREATE TRIGGER class_booking_notice_update AFTER UPDATE OF status ON class_bookings WHEN NEW.status<>OLD.status AND NEW.status IN ('BOOKED','WAITLIST','CANCELLED') BEGIN INSERT INTO notifications(id,tenant_id,member_id,title,body) SELECT lower(hex(randomblob(16))),NEW.tenant_id,NEW.member_id,CASE NEW.status WHEN 'BOOKED' THEN 'رزرو کلاس تأیید شد' WHEN 'WAITLIST' THEN 'در فهرست انتظار کلاس هستید' ELSE 'رزرو کلاس لغو شد' END,s.name FROM class_sessions s WHERE s.tenant_id=NEW.tenant_id AND s.id=NEW.session_id; END;
+--> statement-breakpoint
+CREATE TRIGGER class_promote_waitlist AFTER UPDATE OF status ON class_bookings
+WHEN OLD.status='BOOKED' AND NEW.status='CANCELLED'
+BEGIN
+ UPDATE class_bookings SET status='BOOKED',updated_at=CURRENT_TIMESTAMP WHERE id=(
+  SELECT b.id FROM class_bookings b JOIN class_sessions s ON s.tenant_id=b.tenant_id AND s.id=b.session_id
+  JOIN members m ON m.tenant_id=b.tenant_id AND m.id=b.member_id
+  WHERE b.tenant_id=NEW.tenant_id AND b.session_id=NEW.session_id AND b.status='WAITLIST' AND s.status='SCHEDULED'
+   AND s.starts_at>strftime('%Y-%m-%dT%H:%M:%fZ','now') AND m.status='ACTIVE' AND m.branch_id=s.branch_id
+   AND EXISTS(SELECT 1 FROM memberships ms WHERE ms.tenant_id=m.tenant_id AND ms.member_id=m.id AND ms.status='ACTIVE' AND ms.start_date<=date(s.starts_at,'+3 hours','+30 minutes') AND ms.end_date>=date(s.starts_at,'+3 hours','+30 minutes'))
+  ORDER BY b.queued_at,b.rowid LIMIT 1);
+END;
+--> statement-breakpoint
+CREATE TRIGGER class_cancel_reservations AFTER UPDATE OF status ON class_sessions
+WHEN NEW.status='CANCELLED' AND OLD.status='SCHEDULED'
+BEGIN UPDATE class_bookings SET status='CANCELLED',updated_at=CURRENT_TIMESTAMP WHERE tenant_id=NEW.tenant_id AND session_id=NEW.id AND status IN ('BOOKED','WAITLIST'); END;

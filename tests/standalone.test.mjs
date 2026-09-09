@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync,readFileSync,writeFileSync,existsSync} from 'node:fs';
+import {mkdtempSync,rmSync,readFileSync,writeFileSync,existsSync,mkdirSync,copyFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {resolve} from 'node:path';
 import {authStore} from '../standalone/auth.mjs';
@@ -28,6 +28,17 @@ test('Native login, real app routes, isolation, CSRF, scheduler and session revo
  const search=await (await api('page/members?tenant='+tenant+'&q=Real')).json();assert.equal(search.total,1);assert.equal(search.items[0].name,'Real Member');
  assert.equal((await api('state?tenant=missing')).status,403);
  const report=await (await api('report?tenant='+tenant)).json();assert.equal(report.summary.members,1);
+
+ // Two concurrent HTTP requests compete for one seat using the production handler and persistent adapter.
+ const plan=await (await api('plans?tenant='+tenant,'POST',{name:'Monthly',duration:30,price:300})).json();
+ const firstMember=search.items[0].id;
+ const secondMember=(await (await api('members?tenant='+tenant,'POST',{name:'Second Member',phone:'987654321',branch_id:state.branches[0].id})).json()).id;
+ for(const member_id of [firstMember,secondMember])assert.equal((await api('memberships?tenant='+tenant,'POST',{member_id,plan_id:plan.id,start_date:new Date().toISOString().slice(0,10)})).status,201);
+ const sessionResponse=await api('classes?tenant='+tenant,'POST',{name:'Group Strength',room:'Studio',branch_id:state.branches[0].id,starts_at:new Date(Date.now()+86400000).toISOString(),duration:60,capacity:1});assert.equal(sessionResponse.status,201);const sessionId=(await sessionResponse.json()).id;
+ const bookings=await Promise.all([firstMember,secondMember].map(member_id=>api('class-book/'+sessionId+'?tenant='+tenant,'POST',{member_id}).then(async r=>{assert.equal(r.status,201);return r.json()})));
+ assert.deepEqual(bookings.map(b=>b.status).sort(),['BOOKED','WAITLIST']);
+ const booked=bookings.find(b=>b.status==='BOOKED'),waiting=bookings.find(b=>b.status==='WAITLIST');assert.equal((await api('booking-cancel/'+booked.id+'?tenant='+tenant,'POST',{})).status,200);
+ const roster=await (await api('class-roster/'+sessionId+'?tenant='+tenant)).json();assert.equal(roster.items.find(b=>b.id===waiting.id).status,'BOOKED');
  await runtime.runScheduled();
  const asset=await request('/standalone/auth.mjs',{headers:{cookie}});assert.notEqual(asset.headers.get('content-type'),'text/javascript');
  const account=await request('/account',{headers:{cookie}});const accountCsrf=(await account.text()).match(/name="csrf" value="([^"]+)"/)[1];
@@ -39,8 +50,15 @@ test('Backup and restore preserve SQL and objects, reject tampering and clear se
  const s=storage(root,dir);await s.BUCKET.put('tenant/member/image',Buffer.from('image-bytes'),{httpMetadata:{contentType:'image/png'}});s.close();
  const a=authStore(dir);const session=await a.login(owner.email,'replacement-password-123','127.0.0.1');assert.ok(a.session(session));a.close();
  const folder=resolve(temp,'backup'),restored=resolve(temp,'restored');backup(dir,folder);restore(folder,restored);
- const data=storage(root,restored);assert.equal(data.db.prepare('SELECT COUNT(*) n FROM members').get().n,1);assert.equal(await new Response((await data.BUCKET.get('tenant/member/image')).body).text(),'image-bytes');data.close();
+ const data=storage(root,restored);assert.equal(data.db.prepare('SELECT COUNT(*) n FROM members').get().n,2);assert.equal(await new Response((await data.BUCKET.get('tenant/member/image')).body).text(),'image-bytes');data.close();
  const auth=authStore(restored);assert.equal(auth.session(session),undefined);auth.close();
  writeFileSync(resolve(folder,'data/objects/tenant/member/image'),'tampered');assert.throws(()=>restore(folder,resolve(temp,'tampered')),/checksum/);assert.equal(existsSync(resolve(temp,'tampered')),false);
 });
 test.after(async()=>{if(runtime)await runtime.close();rmSync(temp,{recursive:true,force:true})});
+
+test('Upgrade from 0.2 migrations preserves existing records and adds class tables',()=>{
+ const oldRoot=resolve(temp,'old-source'),upgradeDir=resolve(temp,'upgrade-data');mkdirSync(resolve(oldRoot,'drizzle'),{recursive:true});
+ for(const file of ['0000_tiresome_night_thrasher.sql','0001_domain_guards.sql','0002_striped_kitty_pryde.sql'])copyFileSync(resolve(root,'drizzle',file),resolve(oldRoot,'drizzle',file));
+ const old=storage(oldRoot,upgradeDir);old.db.prepare("INSERT INTO tenants(id,name,owner_id,plan,trial_until,timezone) VALUES('preserved','Existing gym','owner','PRO','','Asia/Tehran')").run();old.close();
+ const upgraded=storage(root,upgradeDir);assert.equal(upgraded.db.prepare("SELECT name FROM tenants WHERE id='preserved'").get().name,'Existing gym');assert.equal(upgraded.db.prepare('SELECT COUNT(*) n FROM class_sessions').get().n,0);assert.equal(upgraded.db.prepare('SELECT COUNT(*) n FROM _migrations').get().n,5);upgraded.close();
+});

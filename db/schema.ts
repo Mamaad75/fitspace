@@ -381,3 +381,23 @@ export const qr_tokens = sqliteTable('qr_tokens', {
  member_id:text('member_id').notNull(),token_hash:text('token_hash').notNull(),expires_at:integer('expires_at').notNull(),used_at:text('used_at'),
  created_at:text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 },t=>[uniqueIndex('uq_qr_token_hash').on(t.token_hash),index('idx_qr_tenant_member').on(t.tenant_id,t.member_id),foreignKey({columns:[t.tenant_id,t.member_id],foreignColumns:[members.tenant_id,members.id]})]);
+
+export const class_sessions = sqliteTable('class_sessions', {
+ id:text('id').primaryKey(),tenant_id:text('tenant_id').notNull().references(()=>tenants.id),
+ branch_id:text('branch_id').notNull(),trainer_id:text('trainer_id'),name:text('name').notNull(),room:text('room').notNull(),
+ starts_at:text('starts_at').notNull(),ends_at:text('ends_at').notNull(),capacity:integer('capacity').notNull(),
+ status:text('status').notNull().default('SCHEDULED'),notes:text('notes').notNull().default(''),
+ created_at:text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),updated_at:text('updated_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+},t=>[uniqueIndex('uq_class_sessions_tenant_id').on(t.tenant_id,t.id),index('idx_class_schedule').on(t.tenant_id,t.starts_at,t.id),
+ foreignKey({columns:[t.tenant_id,t.branch_id],foreignColumns:[branches.tenant_id,branches.id]}),
+ foreignKey({columns:[t.tenant_id,t.trainer_id],foreignColumns:[access.tenant_id,access.id]}),
+ check('class_capacity',sql`${t.capacity} BETWEEN 1 AND 200`),check('class_times',sql`${t.ends_at}>${t.starts_at}`),check('class_status',sql`${t.status} IN ('SCHEDULED','CANCELLED')`)]);
+export const class_bookings = sqliteTable('class_bookings', {
+ id:text('id').primaryKey(),tenant_id:text('tenant_id').notNull().references(()=>tenants.id),
+ session_id:text('session_id').notNull(),member_id:text('member_id').notNull(),status:text('status').notNull(),
+ queued_at:text('queued_at').notNull(),created_at:text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),updated_at:text('updated_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+},t=>[uniqueIndex('uq_class_booking_member').on(t.tenant_id,t.session_id,t.member_id),
+ index('idx_class_roster').on(t.tenant_id,t.session_id,t.status,t.queued_at),index('idx_class_member').on(t.tenant_id,t.member_id),
+ foreignKey({columns:[t.tenant_id,t.session_id],foreignColumns:[class_sessions.tenant_id,class_sessions.id]}),
+ foreignKey({columns:[t.tenant_id,t.member_id],foreignColumns:[members.tenant_id,members.id]}),
+ check('class_booking_status',sql`${t.status} IN ('BOOKED','WAITLIST','CANCELLED','ATTENDED','NO_SHOW')`)]);

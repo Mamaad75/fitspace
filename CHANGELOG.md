@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0
+
+- Group-class schedule and enrollment UI with branch/date/search filters and pagination.
+- Tenant-scoped class and booking schema; append-only migrations 0003 and 0004.
+- Room/trainer overlap guards, member schedule conflict protection, date-valid membership eligibility.
+- Atomic seat allocation, idempotent ordinary retries, waitlist and eligible FIFO promotion on cancellation.
+- Class cancellation with transactional in-app notices; scoped rosters and trainer/staff attendance.
+- ICS calendar files with UTC times, escaped text and UTF-8 line folding.
+- Concurrent HTTP reservation test against the real standalone runtime.
+- Upgrade instructions and preserved GitHub release branches.
+
 ## 0.2.0
 
 - Standalone Node deployment with SQLite and local private object storage; Sites Worker target preserved.

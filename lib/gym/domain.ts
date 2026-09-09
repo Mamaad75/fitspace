@@ -9,6 +9,7 @@ export const entitlements=(t:any)=>{const plan=t.plan==='PRO'&&t.trial_until&&t.
 export const can=(role:Role,domain:string,write=false)=>{
  if(role==='owner')return true;
  if(!['manager','trainer','staff','member'].includes(role))return false;
+ if(domain==='classes')return !write||['owner','manager','staff'].includes(role);
  if(['access','branches','settings'].includes(domain))return false;
  if(role==='manager')return true;
  if(role==='staff')return ['dashboard','members','plans','memberships','attendance','products','orders','payments','notifications'].includes(domain);

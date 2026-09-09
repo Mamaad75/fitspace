@@ -1,3 +1,4 @@
+import {classCalendar,classOptions,listClasses,createClass,bookClass,classRoster,cancelClass,cancelBooking,markClassAttendance} from '@/lib/gym/classes';
 import {report} from '@/lib/gym/reporting';
 import {env} from 'cloudflare:workers';
 import {issueQr,consumeQr} from '@/lib/gym/attendance';
@@ -21,6 +22,16 @@ async function handle(req:Request){try{
   const b:any=await req.json();if(!['STARTER','PRO','ENTERPRISE'].includes(b.plan))throw new DomainError('پلن معتبر نیست.');await database().batch([stmt("UPDATE tenants SET plan=?,trial_until='',updated_at=CURRENT_TIMESTAMP WHERE id=?",[b.plan,b.id]),insert('audit_logs',{id:uid(),tenant_id:b.id,actor:u.email,action:'platform.plan_changed:'+b.plan,entity_id:b.id})]);return json({ok:true});
  }
  const c=await context(req);
+ if(resource==='class-calendar'&&req.method==='GET')return json(await classCalendar(c,id));
+ if(resource==='class-options'&&req.method==='GET')return json(await classOptions(c));
+ if(resource==='classes'&&req.method==='GET')return json(await listClasses(c,Object.fromEntries(new URL(req.url).searchParams)));
+ if(resource==='classes'&&req.method==='POST')return json(await createClass(c,await req.json()),201);
+ if(resource==='class-roster'&&req.method==='GET')return json(await classRoster(c,id,Object.fromEntries(new URL(req.url).searchParams)));
+ if(resource==='class-book'&&req.method==='POST')return json(await bookClass(c,id,await req.json()),201);
+ if(resource==='class-cancel'&&req.method==='POST')return json(await cancelClass(c,id));
+ if(resource==='booking-cancel'&&req.method==='POST')return json(await cancelBooking(c,id));
+ if(resource==='class-attendance'&&req.method==='PATCH')return json(await markClassAttendance(c,id,await req.json()));
+
  if(resource==='page'&&req.method==='GET')return json(await listPage(c,id,Object.fromEntries(new URL(req.url).searchParams)));
  if(resource==='report'&&req.method==='GET')return json(await report(c,Object.fromEntries(new URL(req.url).searchParams)));
  if(resource==='state'&&req.method==='GET'){
@@ -45,5 +56,5 @@ async function handle(req:Request){try{
  const body:any=await req.json();if(req.method==='PATCH')return json(await transition(c,resource,id,body));
  if(req.method==='POST'||req.method==='PUT')return json(await save(c,resource,body,id),req.method==='POST'?201:200);
  throw new DomainError('مسیر پیدا نشد.',404);
- }catch(e){if(e instanceof DomainError)return json({error:e.message},e.status);if(e instanceof SyntaxError)return json({error:'ساختار درخواست معتبر نیست.'},400);const msg=e instanceof Error?e.message:'';if(['inactive_membership','membership_overlap','paid_order_cancellation','invalid_order_payment','invalid_membership_payment'].some(k=>msg.includes(k)))return json({error:'این عملیات با وضعیت فعلی عضویت یا پرداخت سازگار نیست؛ اطلاعات را تازه کنید.'},409);if(msg.includes('UNIQUE constraint'))return json({error:'این رکورد قبلاً ثبت شده است؛ شماره مرجع، کد کالا یا ورود امروز را بررسی کنید.'},409);if(msg.includes('CHECK constraint'))return json({error:'عملیات با موجودی یا اعتبار فعلی سازگار نیست؛ صفحه را تازه کنید.'},409);console.error('Gym API failure',e);return json({error:'ذخیره یا دریافت اطلاعات انجام نشد. دوباره تلاش کنید.'},500);}}
+ }catch(e){if(e instanceof DomainError)return json({error:e.message},e.status);if(e instanceof SyntaxError)return json({error:'ساختار درخواست معتبر نیست.'},400);const msg=e instanceof Error?e.message:'';const classErrors:Record<string,string>={class_time_conflict:'زمان کلاس با برنامه همین سالن یا مربی تداخل دارد.',class_booking_conflict:'عضو در این ساعت رزرو یا انتظار دیگری دارد.',class_capacity_full:'ظرفیت کلاس تکمیل شده است؛ اطلاعات را تازه کنید.',class_not_eligible:'رزرو نیازمند پروفایل فعال، عضویت معتبر در روز کلاس و کلاس آینده است.'};for(const [key,message] of Object.entries(classErrors))if(msg.includes(key))return json({error:message},409);if(['inactive_membership','membership_overlap','paid_order_cancellation','invalid_order_payment','invalid_membership_payment'].some(k=>msg.includes(k)))return json({error:'این عملیات با وضعیت فعلی عضویت یا پرداخت سازگار نیست؛ اطلاعات را تازه کنید.'},409);if(msg.includes('UNIQUE constraint'))return json({error:'این رکورد قبلاً ثبت شده است؛ شماره مرجع، کد کالا یا ورود امروز را بررسی کنید.'},409);if(msg.includes('CHECK constraint'))return json({error:'عملیات با موجودی یا اعتبار فعلی سازگار نیست؛ صفحه را تازه کنید.'},409);console.error('Gym API failure',e);return json({error:'ذخیره یا دریافت اطلاعات انجام نشد. دوباره تلاش کنید.'},500);}}
 export const GET=handle,POST=handle,PUT=handle,PATCH=handle;

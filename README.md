@@ -1,4 +1,4 @@
-# FitSpace 0.2.0
+# FitSpace 0.3.0
 
 Independent, Persian RTL gym management application. This project has no dependency on the Jarchi or restaurant applications.
 
@@ -14,6 +14,15 @@ npm run start:standalone
 ```
 
 Open `http://localhost:3000`. Set `FITSPACE_ORIGIN` to your HTTPS origin in production and run one Node process behind a TLS reverse proxy. Data defaults to `data/`. See the Persian guide for accounts, Docker, backups and GitHub publication.
+
+## Group classes in 0.3.0
+
+- Branch schedules with named rooms, assigned trainers, capacity and Persian date/time display.
+- Prevent overlapping room/trainer schedules and conflicting member bookings.
+- Membership eligibility on the class date, atomic seat reservation and waitlist placement.
+- Cancellation promotes the first currently eligible waitlisted member; class cancellation closes reservations with in-app notifications.
+- Assigned-trainer/staff rosters, attendance after start, no-show marking after end, and ICS calendar downloads.
+- See [RELEASE-0.3.0.md](RELEASE-0.3.0.md) for behavior, access rules and upgrade steps.
 
 ## Implemented product
 
@@ -57,6 +66,13 @@ The first tenant created in an owner-private installation atomically provisions 
 
 Every protected endpoint requires authenticated identity. Tenant operations require `?tenant=<tenant-id>` and a matching active access record. State-changing requests require the same-origin `Origin` header. Client role controls are not authoritative.
 
+- `GET|POST /api/gym/classes`: list schedules or create a class; list supports `from`, `to`, `q`, `branch`, `cursor`.
+- `GET /api/gym/class-options`: permitted branch/trainer options for scheduling staff.
+- `POST /api/gym/class-book/<id>`: reserve for self or a staff-selected `member_id`.
+- `POST /api/gym/booking-cancel/<id>` and `class-cancel/<id>`: controlled cancellation.
+- `GET /api/gym/class-roster/<id>?offset=0`: authorized roster, 50 rows per page.
+- `PATCH /api/gym/class-attendance/<booking-id>`: `ATTENDED` or `NO_SHOW`.
+- `GET /api/gym/class-calendar/<id>`: authorized ICS event content.
 - `GET /api/gym/bootstrap`: identity, allowed gyms, platform-admin flag.
 - `POST /api/gym/tenants`: create an independent gym.
 - `GET /api/gym/page/<collection>?tenant=...&limit=50&cursor=...&q=...&branch=...`: keyset pagination, server-side search and scoped record totals; optional `member_id`, `kind`, `from`, `to`.
@@ -105,3 +121,7 @@ The Site's `.openai/hosting.json` owns its identity and logical `DB` / `BUCKET` 
 `npm test` checks types, builds both targets, then runs all test suites. `.github/workflows/ci.yml` contains the same workflow; it has not run on GitHub yet. Docker configuration is supplied but has not been executed here. No browser or load testing is claimed.
 
 See [CHANGELOG.md](CHANGELOG.md). The archive excludes runtime data, credentials, dependencies and generated bundles. It contains the full source, lockfile, SQL migrations, tests and deployment scripts. Run `bash scripts/publish-github.sh fitspace-gym-os` after `gh auth login` to create and push a new private GitHub repository.
+
+## Repository versions
+
+[Main source](https://github.com/Mamaad75/fitspace) contains 0.3.0. The `release/0.2.0` and `release/0.3.0` branches preserve each delivered version. No production Site redeployment accompanies this source update.
